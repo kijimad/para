@@ -1,6 +1,9 @@
 import cv2
 import numpy as np
 import argparse
+import os
+from datetime import datetime
+from PIL import Image
 
 def align_images(img1_path, img2_path, output1_path, output2_path):
     """
@@ -72,18 +75,92 @@ def align_images(img1_path, img2_path, output1_path, output2_path):
     # 横並びに結合
     combined = np.hstack([img1, img2_aligned])
 
+    # 入力ファイル名から拡張子を除いたベース名を取得
+    input1_basename = os.path.splitext(os.path.basename(img1_path))[0]
+    input2_basename = os.path.splitext(os.path.basename(img2_path))[0]
+    prefix = f"{input1_basename}_{input2_basename}"
+
+    # 出力パスに入力ファイル名を先頭に挿入
+    if '.' in output1_path:
+        base1, ext1 = output1_path.rsplit('.', 1)
+        dir1 = os.path.dirname(base1)
+        file1 = os.path.basename(base1)
+        if dir1:
+            output1_path_with_time = f"{dir1}/{prefix}_{file1}.{ext1}"
+        else:
+            output1_path_with_time = f"{prefix}_{file1}.{ext1}"
+    else:
+        dir1 = os.path.dirname(output1_path)
+        file1 = os.path.basename(output1_path)
+        if dir1:
+            output1_path_with_time = f"{dir1}/{prefix}_{file1}"
+        else:
+            output1_path_with_time = f"{prefix}_{file1}"
+
+    if '.' in output2_path:
+        base2, ext2 = output2_path.rsplit('.', 1)
+        dir2 = os.path.dirname(base2)
+        file2 = os.path.basename(base2)
+        if dir2:
+            output2_path_with_time = f"{dir2}/{prefix}_{file2}.{ext2}"
+        else:
+            output2_path_with_time = f"{prefix}_{file2}.{ext2}"
+    else:
+        dir2 = os.path.dirname(output2_path)
+        file2 = os.path.basename(output2_path)
+        if dir2:
+            output2_path_with_time = f"{dir2}/{prefix}_{file2}"
+        else:
+            output2_path_with_time = f"{prefix}_{file2}"
+
     # 結果を保存
-    cv2.imwrite(output1_path, img1)
-    cv2.imwrite(output2_path, img2_aligned)
+    cv2.imwrite(output1_path_with_time, img1)
+    cv2.imwrite(output2_path_with_time, img2_aligned)
 
     # 結合画像も保存
-    combined_path = output1_path.rsplit('.', 1)[0] + '_combined.' + output1_path.rsplit('.', 1)[1]
+    if dir1:
+        combined_path = f"{dir1}/{prefix}_{file1}_combined.{ext1}"
+    else:
+        combined_path = f"{prefix}_{file1}_combined.{ext1}"
     cv2.imwrite(combined_path, combined)
 
+    # GIFアニメーションを作成
+    if dir1:
+        gif_path = f"{dir1}/{prefix}_{file1}_animation.gif"
+    else:
+        gif_path = f"{prefix}_{file1}_animation.gif"
+
+    # OpenCVのBGRをRGBに変換してPIL Imageに変換
+    img1_rgb = cv2.cvtColor(img1, cv2.COLOR_BGR2RGB)
+    img2_aligned_rgb = cv2.cvtColor(img2_aligned, cv2.COLOR_BGR2RGB)
+
+    pil_img1 = Image.fromarray(img1_rgb)
+    pil_img2 = Image.fromarray(img2_aligned_rgb)
+
+    # 画像をリサイズ（ファイルサイズを減らすため）
+    max_width = 2000
+    if pil_img1.width > max_width:
+        ratio = max_width / pil_img1.width
+        new_size = (max_width, int(pil_img1.height * ratio))
+        pil_img1 = pil_img1.resize(new_size, Image.Resampling.LANCZOS)
+        pil_img2 = pil_img2.resize(new_size, Image.Resampling.LANCZOS)
+
+    # GIFとして保存
+    # 左→右のループ
+    pil_img1.save(
+        gif_path,
+        format='GIF',
+        save_all=True,
+        append_images=[pil_img2],
+        duration=200,
+        loop=0
+    )
+
     print(f"\n補正完了:")
-    print(f"  左画像: {output1_path}")
-    print(f"  右画像（補正済み）: {output2_path}")
+    print(f"  左画像: {output1_path_with_time}")
+    print(f"  右画像（補正済み）: {output2_path_with_time}")
     print(f"  結合画像: {combined_path}")
+    print(f"  GIFアニメーション: {gif_path}")
 
     return M
 

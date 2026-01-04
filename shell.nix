@@ -5,6 +5,7 @@ pkgs.mkShell {
     python313
     python313Packages.opencv4
     python313Packages.numpy
+    python313Packages.pillow
     stdenv.cc.cc.lib
   ];
 
