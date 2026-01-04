@@ -48,8 +48,70 @@ def align_images(img1_path, img2_path, output1_path, output2_path):
     pts1 = np.float32([kp1[m.queryIdx].pt for m in good_matches])
     pts2 = np.float32([kp2[m.trainIdx].pt for m in good_matches])
 
-    # Y方向のズレのみを計算（視差画像はX方向の差があるのが正常）
-    y_diffs = pts2[:, 1] - pts1[:, 1]
+    # 画像の高さを取得
+    h, w = img2.shape[:2]
+
+    # Y方向のズレの傾向から回転角度を推定（より正確）
+    # 画像の左側と右側でY方向のズレの差を計算
+    w_img = img1.shape[1]
+
+    # 左側1/3の特徴点
+    mask_left = pts1[:, 0] < w_img / 3
+    pts1_left = pts1[mask_left]
+    pts2_left = pts2[mask_left]
+
+    # 右側1/3の特徴点
+    mask_right = pts1[:, 0] > 2 * w_img / 3
+    pts1_right = pts1[mask_right]
+    pts2_right = pts2[mask_right]
+
+    if len(pts1_left) > 10 and len(pts1_right) > 10:
+        # 左側と右側のY方向のズレの中央値を計算
+        y_diff_left = np.median(pts2_left[:, 1] - pts1_left[:, 1])
+        y_diff_right = np.median(pts2_right[:, 1] - pts1_right[:, 1])
+
+        # Y方向のズレの差から回転角度を計算
+        # tan(angle) = (y_diff_right - y_diff_left) / width
+        delta_y = y_diff_right - y_diff_left
+        angle = np.arctan2(delta_y, w_img) * 180 / np.pi
+
+        print(f"左側Y方向のズレ: {y_diff_left:.2f}px, 右側Y方向のズレ: {y_diff_right:.2f}px")
+        print(f"検出された回転角度: {angle:.4f}度")
+    else:
+        # フォールバック: アフィン変換で推定
+        M_affine, inliers = cv2.estimateAffinePartial2D(
+            pts2, pts1,
+            method=cv2.RANSAC,
+            ransacReprojThreshold=2.0,
+            confidence=0.99,
+            maxIters=2000
+        )
+
+        if M_affine is not None:
+            angle = np.arctan2(M_affine[1, 0], M_affine[0, 0]) * 180 / np.pi
+            print(f"検出された回転角度（アフィン変換）: {angle:.4f}度")
+        else:
+            angle = 0
+            print(f"回転検出失敗、角度 = 0度")
+
+    # 回転角度が小さい場合は回転補正をスキップ
+    if abs(angle) < 0.2:
+        print(f"回転角度が小さい（{abs(angle):.4f}度 < 0.2度）ため、回転補正をスキップ")
+        img2_rotated = img2.copy()
+        pts2_rotated = pts2.copy()
+    else:
+        print(f"回転補正を適用（左端中央を軸に回転）")
+        # 回転を補正（左端中央を軸にする）
+        center = (0, h / 2)
+        M_rot = cv2.getRotationMatrix2D(center, angle, 1.0)
+        img2_rotated = cv2.warpAffine(img2, M_rot, (w, h))
+
+        # 特徴点も回転
+        pts2_homogeneous = np.hstack([pts2, np.ones((len(pts2), 1))])
+        pts2_rotated = (M_rot @ pts2_homogeneous.T).T[:, :2]
+
+    # Y方向のズレを計算（回転後の特徴点を使用）
+    y_diffs = pts2_rotated[:, 1] - pts1[:, 1]
 
     # 外れ値除去: 中央値から3σ以上離れた点を除外
     median_y = np.median(y_diffs)
@@ -66,12 +128,9 @@ def align_images(img1_path, img2_path, output1_path, output2_path):
     print(f"検出されたY方向のズレ: {median_y_shift:.2f}ピクセル")
     print(f"Y方向のズレの標準偏差: {np.std(y_diffs_filtered):.2f}ピクセル")
 
-    # Y方向の平行移動のみ適用（回転・スケールは適用しない）
-    M = np.float32([[1, 0, 0], [0, 1, -median_y_shift]])
-
-    # 画像2を補正
-    h, w = img2.shape[:2]
-    img2_aligned = cv2.warpAffine(img2, M, (w, h))
+    # Y方向の平行移動のみ適用
+    M_translate = np.float32([[1, 0, 0], [0, 1, -median_y_shift]])
+    img2_aligned = cv2.warpAffine(img2_rotated, M_translate, (w, h))
 
     # 横並びに結合
     combined = np.hstack([img1, img2_aligned])
@@ -125,11 +184,13 @@ def align_images(img1_path, img2_path, output1_path, output2_path):
         combined_path = f"{prefix}_{file1}_combined.{ext1}"
     cv2.imwrite(combined_path, combined)
 
-    # GIFアニメーションを作成
+    # アニメーションファイルのパスを設定
     if dir1:
         gif_path = f"{dir1}/{prefix}_{file1}_animation.gif"
+        webp_path = f"{dir1}/{prefix}_{file1}_animation.webp"
     else:
         gif_path = f"{prefix}_{file1}_animation.gif"
+        webp_path = f"{prefix}_{file1}_animation.webp"
 
     # OpenCVのBGRをRGBに変換してPIL Imageに変換
     img1_rgb = cv2.cvtColor(img1, cv2.COLOR_BGR2RGB)
@@ -147,7 +208,6 @@ def align_images(img1_path, img2_path, output1_path, output2_path):
         pil_img2 = pil_img2.resize(new_size, Image.Resampling.LANCZOS)
 
     # GIFとして保存
-    # 左→右のループ
     pil_img1.save(
         gif_path,
         format='GIF',
@@ -157,13 +217,25 @@ def align_images(img1_path, img2_path, output1_path, output2_path):
         loop=0
     )
 
+    # WebPとして保存
+    pil_img1.save(
+        webp_path,
+        format='WEBP',
+        save_all=True,
+        append_images=[pil_img2],
+        duration=200,
+        loop=0,
+        lossless=False,
+        quality=80,
+        method=4
+    )
+
     print(f"\n補正完了:")
     print(f"  左画像: {output1_path_with_time}")
     print(f"  右画像（補正済み）: {output2_path_with_time}")
     print(f"  結合画像: {combined_path}")
     print(f"  GIFアニメーション: {gif_path}")
-
-    return M
+    print(f"  WebPアニメーション: {webp_path}")
 
 def main():
     parser = argparse.ArgumentParser(
